@@ -56,6 +56,7 @@ WIN_CENTER_S = 1.02     # position du hublot le long du profil de paroi
 
 PAX_DOOR_W = 1.07       # porte passagers type A
 PAX_DOOR_TOP = 1.98     # hauteur du haut de porte
+PAX_REVEAL = 0.26       # profondeur de l'embrasure des portes passagers
 IN_DOOR_W, IN_DOOR_H = 0.90, 2.00   # portes interieures
 
 BIN_LEN = 3 * PITCH     # longueur d'une porte de coffre
@@ -418,7 +419,7 @@ def pax_door(parts, door_z, name):
     s_top = WALL_FULL.s_at_y(PAX_DOOR_TOP)
     hole = rrect(door_z, (0.06 + s_top) / 2, PAX_DOOR_W, s_top - 0.06, 0.18)
     bezel = rrect(door_z, s_top / 2 + 0.01, PAX_DOOR_W + 0.18, s_top + 0.14, 0.26)
-    openings(parts, WALL_FULL, [(bezel, hole)], 0.03, 0.26)
+    openings(parts, WALL_FULL, [(bezel, hole)], 0.03, PAX_REVEAL)
     # panneau EXIT au-dessus, seuil inox
     p, _ = WALL_FULL.map(np.array([s_top + 0.16]), np.array([door_z]), -0.04)
     x, y = p[0, 0], p[0, 1]
@@ -467,7 +468,9 @@ def build_ceiling(parts, z0, z1, lights=True):
         parts.add("light", surface(CEILING, unary_union(spots), -0.002, 0.02), sym=True)
 
 
-def floor(parts, z0, z1, x0=-FLOOR_X, x1=FLOOR_X, key="carpet", y=0.0):
+def floor(parts, z0, z1, x0=None, x1=None, key="carpet", y=0.0):
+    x0 = -FLOOR_X if x0 is None else x0
+    x1 = FLOOR_X if x1 is None else x1
     v = np.array([[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]])
     m = trimesh.Trimesh(v, [[0, 2, 1], [0, 3, 2]], process=False)
     if key == "carpet":
