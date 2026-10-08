@@ -1,8 +1,9 @@
 """Avion 2-2 complet : l'interieur de generate_avion_2x2.py + l'exterieur d'un A320.
 
 - Le fuselage exterieur est reconstruit a partir des sections mesurees sur
-  exterieur_a320.glb (nez, partie droite allongee, cone de queue), avec de vrais
-  trous alignes sur les hublots, les portes passagers et le pare-brise.
+  exterieur_a320.glb, aux proportions exactes de l'A320 (une seule echelle,
+  rien n'est etire), avec de vrais trous alignes sur les hublots, les portes
+  passagers et le pare-brise.
 - Les ailes, moteurs, empennages et trains d'atterrissage sont repris du modele
   A320, a la meme echelle, places autour du fuselage.
 - Le nez du cockpit interieur suit la forme du nez exterieur.
@@ -36,14 +37,16 @@ TAIL = [(0.70, 0.237, 0.769, 0.266), (0.78, 0.243, 0.768, 0.262), (0.98, 0.257, 
 MID_X = (-1.12, 0.70)            # partie a section constante
 A_CY, A_R = 0.503, 0.266         # centre et rayon de la section constante
 
-R_EXT = 1.85                     # rayon exterieur du fuselage (m)
-K = R_EXT / A_R                  # echelle A320 -> metres
-CY_EXT = 1.0                     # hauteur du centre du fuselage (plancher cabine = 0)
-NOSE_LEN = 3.4                   # longueur du nez (le cockpit de 2,6 m est dedans)
-TAIL_LEN = (TAIL[-1][0] - MID_X[1]) * K
+# Echelle unique et placement calcules pour que tout l'interieur tienne dans
+# l'A320 avec ~8 cm de marge (plus petite echelle possible : 7,4).
+K = 7.6                          # echelle A320 -> metres (longueur totale ~36 m)
+R_EXT = A_R * K                  # rayon exterieur du fuselage
+CY_EXT = 0.9                     # hauteur du centre du fuselage (plancher cabine = 0)
+OFF = 5.9                        # position interne de l'origine x=0 de l'A320
+BLEND = 1.0                      # raccord entre la partie droite et le cone de queue
 
-G.WIN_DEPTH = 0.50               # les embrasures des hublots rejoignent la peau
-G.PAX_REVEAL = 0.55              # idem pour les portes passagers
+G.WIN_DEPTH = 0.66               # les embrasures des hublots rejoignent la peau
+G.PAX_REVEAL = 0.66              # idem pour les portes passagers
 G.M["exterior"] = mat("Fuselage", (0.95, 0.95, 0.96), 0.4)
 G.NAMES["exterior"] = "Fuselage"
 
@@ -59,14 +62,32 @@ def section(table, x):
     return ((lo + hi) / 2 - A_CY) * K + CY_EXT, (hi - lo) / 2 * K, hz * K
 
 
+def x_of(zi):
+    """Position x de l'A320 pour une position interne zi (positive vers l'avant)."""
+    return (OFF - zi) / K
+
+
+def zi_of(x):
+    return OFF - x * K
+
+
+# partie droite du fuselage (percee) : du derriere de la porte arriere au debut du nez
+STRAIGHT = (G.REAR_DOOR[0] + 0.5, zi_of(MID_X[0]))
+NOSE_TIP = zi_of(NOSE[0][0])
+TAIL_TIP = zi_of(TAIL[-1][0])
+
+
 def ext_section(zi):
-    """Section exterieure a la position interne zi (positive vers l'avant)."""
-    if zi > G.CREW[1]:
-        u = min((zi - G.CREW[1]) / NOSE_LEN, 1.0)
-        return section(NOSE, MID_X[0] - u * (MID_X[0] - NOSE[0][0]))
-    if zi < G.LAV[0]:
-        return section(TAIL, MID_X[1] + (G.LAV[0] - zi) / K)
-    return CY_EXT, R_EXT, R_EXT
+    """Section exterieure a la position interne zi."""
+    x = x_of(zi)
+    if x < MID_X[0]:
+        return section(NOSE, x)
+    if zi >= STRAIGHT[0]:
+        return CY_EXT, R_EXT, R_EXT
+    # cone de queue, raccorde en douceur a la partie droite
+    w = min((STRAIGHT[0] - zi) / BLEND, 1.0)
+    cy, hy, hz = section(TAIL, x) if x > MID_X[1] else (CY_EXT, R_EXT, R_EXT)
+    return CY_EXT + w * (cy - CY_EXT), R_EXT + w * (hy - R_EXT), R_EXT + w * (hz - R_EXT)
 
 
 def on_ellipse(dirs, cy, hy, hz):
@@ -109,7 +130,7 @@ def build_cockpit(parts):
         outer.append(np.column_stack([on_ellipse(p - [0, cy], cy, hy, hz), np.full(N, zi)]))
     # radome : on prolonge les memes directions jusqu'a la pointe
     dirs = base * nose_scale(1.0) - [0, ext_section(z1)[0]]
-    tip = G.CREW[1] + NOSE_LEN
+    tip = NOSE_TIP
     for zi in np.linspace(z1, tip, 7)[1:-1]:
         cy, hy, hz = ext_section(zi)
         outer.append(np.column_stack([on_ellipse(dirs, cy, hy, hz), np.full(N, zi)]))
@@ -157,8 +178,25 @@ def ellipse_profile(cy, hy, hz, n=48):
     return Profile(np.column_stack([hz * np.cos(th), cy + hy * np.sin(th)]))
 
 
+def loft(parts, zs, n=192):
+    """Peau fermee (sans trou) le long des positions zs, a partir des sections."""
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    dirs = np.column_stack([np.cos(th), np.sin(th)])
+    rings = []
+    for zi in zs:
+        cy, hy, hz = ext_section(zi)
+        rings.append(np.column_stack([on_ellipse(dirs, cy, hy, hz), np.full(n, zi)]))
+    verts = np.vstack(rings)
+    faces = []
+    for k in range(len(zs) - 1):
+        for i in range(n):
+            j = (i + 1) % n
+            faces += [[k * n + i, k * n + j, (k + 1) * n + j], [k * n + i, (k + 1) * n + j, (k + 1) * n + i]]
+    return verts, faces
+
+
 def build_fuselage(parts):
-    z0, z1 = G.LAV[0], G.CREW[1]
+    z0, z1 = STRAIGHT
     skin = ellipse_profile(CY_EXT, R_EXT, R_EXT)
     holes = []
     # hublots : au bout de l'embrasure interieure
@@ -175,24 +213,31 @@ def build_fuselage(parts):
     # liseré sombre autour des hublots, vu de l'exterieur
     rims = unary_union([h.buffer(0.03).difference(h) for h in holes[:G.N_WINDOWS]])
     parts.add("dark", surface(skin, rims, 0.004, 0.02), sym=True)
+    # comme sur l'A320 : la rangee de hublots continue sur tout le fuselage ;
+    # hors de la cabine ce sont des hublots peints (pas de trou derriere)
+    s_win = holes[0].centroid.y
+    real = [G.CABIN[0] + G.MARGIN + i * G.PITCH for i in range(G.N_WINDOWS)]
+    doors = [(zz[0] + zz[1]) / 2 for zz in (G.REAR_DOOR, G.FRONT_DOOR)]
+    painted = []
+    for zw in np.arange(real[0] - 60 * G.PITCH, real[-1] + 60 * G.PITCH, G.PITCH):
+        if not (z0 + 0.3 < zw < min(z1, zi_of(-1.39)) - 0.3) or zi_of(1.28) > zw:
+            continue
+        if min(abs(zw - r) for r in real) < 0.1 or min(abs(zw - d) for d in doors) < 0.85:
+            continue
+        painted.append(rrect(zw, s_win, G.WIN_W + 0.02, G.WIN_H + 0.02, G.WIN_R + 0.01))
+    if painted:
+        parts.add("dark", surface(skin, unary_union(painted), 0.004, 0.02), sym=True)
 
-    # cone de queue (ferme)
-    n = 96
-    th = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    dirs = np.column_stack([np.cos(th), np.sin(th)])
-    zs = np.linspace(z0, z0 - TAIL_LEN, 40)
-    rings = []
-    for zi in zs:
-        cy, hy, hz = ext_section(zi)
-        rings.append(np.column_stack([on_ellipse(dirs, cy, hy, hz), np.full(n, zi)]))
-    verts = np.vstack(rings + [[[0.0, ext_section(zs[-1])[0], zs[-1]]]])
-    faces = []
-    for k in range(len(zs) - 1):
-        for i in range(n):
-            j = (i + 1) % n
-            faces += [[k * n + i, k * n + j, (k + 1) * n + j], [k * n + i, (k + 1) * n + j, (k + 1) * n + i]]
+    # cone de queue (ferme en pointe)
+    zs = np.concatenate([np.linspace(z0, z0 - BLEND, 8), np.linspace(z0 - BLEND, TAIL_TIP, 50)[1:]])
+    verts, faces = loft(parts, zs)
+    n = 192
+    verts = np.vstack([verts, [[0.0, ext_section(TAIL_TIP)[0], TAIL_TIP]]])
     last = (len(zs) - 1) * n
     faces += [[last + i, last + (i + 1) % n, len(verts) - 1] for i in range(n)]
+    parts.add("exterior", trimesh.Trimesh(verts, np.array(faces), process=False))
+    # debut du nez : de la fin de la partie droite jusqu'au cockpit
+    verts, faces = loft(parts, np.linspace(z1, G.COCKPIT[0], 30))
     parts.add("exterior", trimesh.Trimesh(verts, np.array(faces), process=False))
 
 
@@ -200,16 +245,6 @@ def build_fuselage(parts):
 def a320_parts():
     """Pieces de l'A320 hors fuselage, placees autour du nouveau fuselage (repere interne)."""
     src = trimesh.load(A320, force="scene")
-    mid_c = (G.LAV[0] + G.CREW[1]) / 2
-    x_c = (MID_X[0] + MID_X[1]) / 2
-
-    def zi_of(x):
-        if x < MID_X[0]:
-            return G.CREW[1] + (MID_X[0] - x) / (MID_X[0] - NOSE[0][0]) * NOSE_LEN
-        if x > MID_X[1]:
-            return G.LAV[0] - (x - MID_X[1]) * K
-        return mid_c - (x - x_c) * K
-
     out = []
     for node in src.graph.nodes_geometry:
         T, gname = src.graph[node]
@@ -287,5 +322,5 @@ if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(G.HERE, "avion_complet.glb")
     sc = build()
     sc.export(out)
-    print(f"{out}: longueur {G.CREW[1] + NOSE_LEN - (G.LAV[0] - TAIL_LEN):.1f} m, "
+    print(f"{out}: longueur {NOSE_TIP - TAIL_TIP:.1f} m, "
           f"{sum(len(g.faces) for g in sc.geometry.values())} triangles")
