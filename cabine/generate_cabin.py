@@ -62,6 +62,13 @@ BIN_LEN = 3 * PITCH     # longueur d'une porte de coffre
 PART_T = 0.06           # epaisseur des cloisons
 CORRIDOR = 0.55         # demi-largeur du couloir equipage (axe des cloisons)
 AISLES = (0.80, 1.32)   # bords d'allee (x) : bloc central |x|<0.80, blocs lateraux |x|>1.32
+AISLE_LINES = (-AISLES[1], -AISLES[0], AISLES[0], AISLES[1])
+CENTER_BINS = True      # coffres centraux (gros-porteur)
+CEIL_LIGHT_X = (1.6, 0.5)
+LAV_CX = (-0.74, 0.74)  # centre des 2 cabinets WC
+LAV_HALF = 0.74         # demi-largeur d'un cabinet WC
+BED_X = 1.68            # position du lit (x)
+COCKPIT_SCALE = (1.0, 1.0)  # echelle (x, y) des sieges et du tableau de bord
 
 
 def mat(name, rgb, rough=0.6, metal=0.0, emissive=None, tex=None):
@@ -365,25 +372,17 @@ def build_cabin(parts):
     caps = OUTLINE_OPEN.difference(OUTLINE_BINS).intersection(box(0, 1.5, 4, 3))
 
     # coffres centraux (au-dessus du bloc de 3 sieges du milieu)
-    s_face = CENTER_BIN.s_at_x(0.83)
-    parts.add("bin", surface(CENTER_BIN, box(z0, 0, z1, CENTER_BIN.length), strip=0.01), sym=True)
-    c_seams = [box(z - 0.003, 0.03, z + 0.003, s_face) for z in np.arange(z0 + BIN_LEN, z1 - 0.1, BIN_LEN)]
-    c_seams.append(box(z0, s_face - 0.005, z1, s_face))
-    parts.add("seam", surface(CENTER_BIN, unary_union(c_seams), -0.0015, 0.005), sym=True)
-    c_latch = [rrect(z + BIN_LEN / 2, s_face - 0.12, 0.16, 0.035, 0.015) for z in np.arange(z0, z1 - 0.1, BIN_LEN)]
-    parts.add("dark", surface(CENTER_BIN, unary_union(c_latch), -0.0015, 0.01), sym=True)
-
-    # flancs des coffres aux deux bouts de la cabine
-    for z in (z0, z1):
+    if CENTER_BINS:
+        build_center_bins(parts, z0, z1)
+    for z in (z0, z1):  # flancs des coffres aux deux bouts de la cabine
         for g in polys(caps):
             parts.add("bin", flat_xy(g, z), sym=True)
-        parts.add("bin", flat_xy(CENTER_BIN_SECTION, z))
 
     # PSU (services passagers) sous les coffres : panneau + liseuses
-    s_mid = CENTER_BIN.s_at_x(0.55)
+    psu = [(BIN_BOTTOM, 0.22)] + ([(CENTER_BIN, CENTER_BIN.s_at_x(0.55))] if CENTER_BINS else [])
     for z in zs[::2]:
         zc = z + PITCH / 2
-        for prof, s in ((BIN_BOTTOM, 0.22), (CENTER_BIN, s_mid)):
+        for prof, s in psu:
             parts.add("psu", surface(prof, rrect(zc, s, 0.42, 0.20, 0.03), -0.004, 0.02), sym=True)
             for dz in (-0.09, 0.09):
                 p, _ = prof.map(np.array([s]), np.array([zc + dz]), -0.004)
@@ -392,13 +391,26 @@ def build_cabin(parts):
                 dome.apply_translation(p[0])
                 parts.add("light", dome, sym=True)
 
-    # eclairage indirect le long des coffres lateraux et centraux
+    # eclairage indirect le long des coffres
     parts.add("light", surface(CEILING, box(z0, 0.004, z1, 0.05), -0.002, 0.01), sym=True)
+    # bandes jaunes le long des allees
+    for x in AISLE_LINES:
+        parts.add("line", B(x - 0.02, x + 0.02, 0.0, 0.003, z0 + 0.01, z1 - 0.01))
+
+
+def build_center_bins(parts, z0, z1):
+    s_face = CENTER_BIN.s_at_x(0.83)
+    parts.add("bin", surface(CENTER_BIN, box(z0, 0, z1, CENTER_BIN.length), strip=0.01), sym=True)
+    c_seams = [box(z - 0.003, 0.03, z + 0.003, s_face) for z in np.arange(z0 + BIN_LEN, z1 - 0.1, BIN_LEN)]
+    c_seams.append(box(z0, s_face - 0.005, z1, s_face))
+    parts.add("seam", surface(CENTER_BIN, unary_union(c_seams), -0.0015, 0.005), sym=True)
+    c_latch = [rrect(z + BIN_LEN / 2, s_face - 0.12, 0.16, 0.035, 0.015) for z in np.arange(z0, z1 - 0.1, BIN_LEN)]
+    parts.add("dark", surface(CENTER_BIN, unary_union(c_latch), -0.0015, 0.01), sym=True)
+
+    for z in (z0, z1):
+        parts.add("bin", flat_xy(CENTER_BIN_SECTION, z))
     s_c = CEILING.s_at_x(1.02)
     parts.add("light", surface(CEILING, box(z0, s_c - 0.04, z1, s_c), -0.002, 0.01), sym=True)
-    # bandes jaunes le long des deux allees
-    for x in (-AISLES[1], -AISLES[0], AISLES[0], AISLES[1]):
-        parts.add("line", B(x - 0.02, x + 0.02, 0.0, 0.003, z0 + 0.01, z1 - 0.01))
 
 
 def pax_door(parts, door_z, name):
@@ -450,7 +462,7 @@ def build_ceiling(parts, z0, z1, lights=True):
     parts.add("seam", surface(CEILING, unary_union(seams), -0.0015, 0.02), sym=True)
     if lights:
         spots = []
-        for s in (CEILING.s_at_x(1.6), CEILING.s_at_x(0.5)):
+        for s in [CEILING.s_at_x(x) for x in CEIL_LIGHT_X]:
             spots += [box(z - 0.25, s, z + 0.25, s + 0.10) for z in np.arange(z0 + 0.6, z1 - 0.3, 1.1)]
         parts.add("light", surface(CEILING, unary_union(spots), -0.002, 0.02), sym=True)
 
@@ -511,18 +523,17 @@ def build_lavatories(parts):
     build_ceiling(parts, z0, z1, lights=False)
     floor(parts, z0, z1)
     bulkhead(parts, z0, thickness=0.0001)                 # cloison du fond
-    xs = (0.0, 0.74, 1.48)                                # murs : centre, entre-deux, cote
-    lav_cx = (-0.74, 0.74)
+    lav_cx = LAV_CX
     holes = [arch(cx, 0.72, IN_DOOR_H) for cx in lav_cx]
     bulkhead(parts, z1, holes)                            # facade avec 2 portes
-    for x in (-1.48, 0.0, 1.48):
-        parts.add("panel", B(x - PART_T / 2, x + PART_T / 2, 0, 2.44, z0, z1 - PART_T))
+    for x in (-2 * LAV_HALF, 0.0, 2 * LAV_HALF):
+        parts.add("panel", B(x - PART_T / 2, x + PART_T / 2, 0, CEILING.y[-1] - 0.07, z0, z1 - PART_T))
     for cx in lav_cx:
-        a, b = cx - 0.72, cx + 0.72
+        a, b = cx - LAV_HALF + 0.02, cx + LAV_HALF - 0.02
         floor(parts, z0, z1 - PART_T, a + 0.03, b - 0.03, key="vinyl", y=0.002)
         # lavabo sur le cote exterieur, miroir au-dessus, plafonnier
         side = 1 if cx > 0 else -1
-        xa, xb = sorted((cx + side * 0.70, cx + side * 0.25))
+        xa, xb = sorted((cx + side * (LAV_HALF - 0.04), cx + side * (LAV_HALF - 0.45)))
         zc = z0 + 1.05
         parts.add("panel", B(xa, xb, 0.0, 0.84, zc - 0.28, zc + 0.28))
         parts.add("steel", B(xa, xb, 0.84, 0.87, zc - 0.30, zc + 0.30))
@@ -530,12 +541,12 @@ def build_lavatories(parts):
         bowl.apply_transform(rotation_matrix(np.pi / 2, [1, 0, 0]))
         bowl.apply_translation([(xa + xb) / 2, 0.872, zc])
         parts.add("dark", bowl)
-        xw = cx + side * 0.69
+        xw = cx + side * (LAV_HALF - 0.05)
         parts.add("steel", cyl(0.012, [xw, 0.87, zc], [xw, 1.02, zc]))
         parts.add("steel", cyl(0.010, [xw, 1.02, zc], [xw - side * 0.14, 1.02, zc]))
-        parts.add("mirror", B(cx + side * 0.705, cx + side * 0.71, 1.10, 1.75, zc - 0.28, zc + 0.28) if side > 0
-                  else B(cx - 0.71, cx - 0.705, 1.10, 1.75, zc - 0.28, zc + 0.28))
-        parts.add("light", B(cx - 0.20, cx + 0.20, 2.40, 2.41, z0 + 0.6, z0 + 1.2))
+        xm = cx + side * (LAV_HALF - 0.035)
+        parts.add("mirror", B(xm - 0.0025, xm + 0.0025, 1.10, 1.75, zc - 0.28, zc + 0.28))
+        parts.add("light", B(cx - 0.20, cx + 0.20, CEILING.y[-1] - 0.12, CEILING.y[-1] - 0.11, z0 + 0.6, z0 + 1.2))
         flat_door(f"Porte_WC_{'D' if cx > 0 else 'G'}", "x", cx, cx - 0.36, cx + 0.36,
                   z1 - PART_T / 2, hinge_at_start=cx > 0)
 
@@ -601,6 +612,17 @@ def build_cockpit(parts):
         m.visual = trimesh.visual.TextureVisuals(uv=np.column_stack([v[:, 0], v[:, 2]]) / 0.8, material=M["carpet"])
         parts.add("carpet", m)
 
+    # amenagement, mis a l'echelle de la largeur du cockpit
+    inner = Parts()
+    cockpit_interior(inner, z0)
+    S = np.diag([COCKPIT_SCALE[0], COCKPIT_SCALE[1], 1.0, 1.0])
+    for k, meshes in inner.items():
+        for m in meshes:
+            m.apply_transform(S)
+            parts[k].append(m)
+
+
+def cockpit_interior(parts, z0):
     # sieges pilotes (face a l'avant = +z)
     zs = z0 + 1.25
     for x in (-0.55, 0.55):
@@ -700,13 +722,13 @@ def build():
     bed = os.path.join(HERE, "lit.glb")
     if os.path.exists(bed):
         z_wall = to_gltf([0, 0, CREW[1] - PART_T])[2]
-        T = translation_matrix([1.68, 0.0, z_wall + 1.06]) @ rotation_matrix(np.pi, [0, 1, 0])
+        T = translation_matrix([BED_X, 0.0, z_wall + 1.06]) @ rotation_matrix(np.pi, [0, 1, 0])
         import_model(scene, bed, "Lit", T)
     # toilettes : reservoir contre la cloison du fond, face a l'avant
     wc = os.path.join(HERE, "toilettes.glb")
     if os.path.exists(wc):
         z_back = to_gltf([0, 0, LAV[0]])[2]
-        for cx, side in ((-0.74, "G"), (0.74, "D")):
+        for cx, side in zip(LAV_CX, ("G", "D")):
             x = cx + 0.15 if cx < 0 else cx - 0.15   # cote interieur, lavabo cote fuselage
             T = (translation_matrix([x, 0.0, z_back - 0.60])
                  @ rotation_matrix(np.pi, [0, 1, 0]) @ scale_matrix(0.09))
