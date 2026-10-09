@@ -65,6 +65,7 @@ CORRIDOR = 0.55         # demi-largeur du couloir equipage (axe des cloisons)
 AISLES = (0.80, 1.32)   # bords d'allee (x) : bloc central |x|<0.80, blocs lateraux |x|>1.32
 AISLE_LINES = (-AISLES[1], -AISLES[0], AISLES[0], AISLES[1])
 CENTER_BINS = True      # coffres centraux (gros-porteur)
+SANS_COFFRES = False    # True : pas de coffres lateraux (modele separe, avec rangement)
 CEIL_LIGHT_X = (1.6, 0.5)
 LAV_CX = (-0.74, 0.74)  # centre des 2 cabinets WC
 LAV_HALF = 0.74         # demi-largeur d'un cabinet WC
@@ -359,23 +360,15 @@ def build_cabin(parts):
     seam_poly = unary_union(seams).difference(unary_union(bezels).buffer(0.01))
     parts.add("seam", surface(WALL, seam_poly, -0.0015), sym=True)
 
-    # coffres lateraux
-    parts.add("bin", surface(BIN_BOTTOM, box(z0, 0, z1, BIN_BOTTOM.length)), sym=True)
-    parts.add("bin", surface(BIN_FACE, box(z0, 0, z1, BIN_FACE.length), strip=0.01), sym=True)
-    bin_seams, latches = [], []
-    for z in np.arange(z0 + BIN_LEN, z1 - 0.1, BIN_LEN):
-        bin_seams.append(box(z - 0.003, 0.005, z + 0.003, BIN_FACE.length - 0.005))
-    for z in np.arange(z0, z1 - 0.1, BIN_LEN):
-        latches.append(rrect(z + BIN_LEN / 2, BIN_FACE.length - 0.075, 0.16, 0.035, 0.015))
-    bin_seams.append(box(z0, 0.003, z1, 0.008))  # bas de porte
-    parts.add("seam", surface(BIN_FACE, unary_union(bin_seams), -0.0015, 0.005), sym=True)
-    parts.add("dark", surface(BIN_FACE, unary_union(latches), -0.0015, 0.01), sym=True)
+    # coffres lateraux (SANS_COFFRES : ils sont dans le modele separe coffres.glb, avec rangement)
+    if not SANS_COFFRES:
+        build_side_bins(parts, z0, z1)
     caps = OUTLINE_OPEN.difference(OUTLINE_BINS).intersection(box(0, 1.5, 4, 3))
 
     # coffres centraux (au-dessus du bloc de 3 sieges du milieu)
     if CENTER_BINS:
         build_center_bins(parts, z0, z1)
-    for z in (z0, z1):  # flancs des coffres aux deux bouts de la cabine
+    for z in (z0, z1) if not SANS_COFFRES else ():  # flancs des coffres aux deux bouts de la cabine
         for g in polys(caps):
             parts.add("bin", flat_xy(g, z), sym=True)
 
@@ -397,6 +390,20 @@ def build_cabin(parts):
     # bandes jaunes le long des allees
     for x in AISLE_LINES:
         parts.add("line", B(x - 0.02, x + 0.02, 0.0, 0.003, z0 + 0.01, z1 - 0.01))
+
+
+def build_side_bins(parts, z0, z1):
+    """Coffres lateraux pleins (faces, joints, loquets)."""
+    parts.add("bin", surface(BIN_BOTTOM, box(z0, 0, z1, BIN_BOTTOM.length)), sym=True)
+    parts.add("bin", surface(BIN_FACE, box(z0, 0, z1, BIN_FACE.length), strip=0.01), sym=True)
+    bin_seams, latches = [], []
+    for z in np.arange(z0 + BIN_LEN, z1 - 0.1, BIN_LEN):
+        bin_seams.append(box(z - 0.003, 0.005, z + 0.003, BIN_FACE.length - 0.005))
+    for z in np.arange(z0, z1 - 0.1, BIN_LEN):
+        latches.append(rrect(z + BIN_LEN / 2, BIN_FACE.length - 0.075, 0.16, 0.035, 0.015))
+    bin_seams.append(box(z0, 0.003, z1, 0.008))  # bas de porte
+    parts.add("seam", surface(BIN_FACE, unary_union(bin_seams), -0.0015, 0.005), sym=True)
+    parts.add("dark", surface(BIN_FACE, unary_union(latches), -0.0015, 0.01), sym=True)
 
 
 def build_center_bins(parts, z0, z1):
