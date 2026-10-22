@@ -21,11 +21,46 @@ import trimesh
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import generate_avion_exterieur as E  # noqa: E402
 import generate_cabin as G  # noqa: E402
+from shapely.geometry import box as _box  # noqa: E402
 
-BASE = os.path.join(HERE, "avion_complet_sans_coffres.glb")
-COFFRES = os.path.join(HERE, "coffres.glb")
+_surface = G.surface
+TRONCON = 0.3   # longueur max d'une bande (m) : pas de triangles en aiguille
+
+
+def surface_decoupee(profile, poly, d=0.0, strip=0.025):
+    """Comme generate_cabin.surface, mais coupe aussi le long de l'avion tous les TRONCON."""
+    z0, s0, z1, s1 = poly.bounds
+    if z1 - z0 <= TRONCON * 1.5:
+        return _surface(profile, poly, d, strip)
+    parts = []
+    for a in np.arange(z0, z1, TRONCON):
+        piece = poly.intersection(_box(a, s0 - 1, min(a + TRONCON, z1), s1 + 1))
+        if not piece.is_empty and piece.area > 1e-9:
+            m = _surface(profile, piece, d, strip)
+            if m is not None:
+                parts.append(m)
+    if not parts:
+        return None
+    return trimesh.util.concatenate(parts)
+
+
+G.surface = surface_decoupee
+import generate_avion_exterieur as E  # noqa: E402
+import generate_coffres as C  # noqa: E402
+E.surface = surface_decoupee
+C.surface = surface_decoupee
+
+TMP = os.path.join(HERE, ".tmp_avion")
+BASE = os.path.join(TMP, "base.glb")
+COFFRES = os.path.join(TMP, "coffres.glb")
+
+
+def generer_bases():
+    os.makedirs(TMP, exist_ok=True)
+    G.SANS_COFFRES = True
+    E.build().export(BASE)
+    C.build(COFFRES)
 K, A_CY, CY, OFF = E.K, E.A_CY, E.CY_EXT, E.OFF
 A320_TO_GLTF = np.array([[0, 0, K, 0], [0, K, 0, CY - A_CY * K], [K, 0, 0, -OFF], [0, 0, 0, 1]])
 NOIR = trimesh.visual.material.PBRMaterial(name="HublotNoir", baseColorFactor=[10, 10, 12, 255],
@@ -242,9 +277,67 @@ def charger():
     return corps, portes
 
 
+def raffiner(m, L=0.3):
+    """Coupe les aretes plus longues que L (pas de triangles en aiguille, pas de fissures)."""
+    vis = m.visual
+    uv = vis.uv if hasattr(vis, "uv") and vis.uv is not None and len(vis.uv) == len(m.vertices) else None
+    # soude les sommets identiques (position + uv) pour que les voisins partagent les aretes
+    cle = np.round(m.vertices / 4e-4)
+    if uv is not None:
+        cle = np.column_stack([cle, np.round(uv / 1e-5)])
+    _, idx, inv = np.unique(cle, axis=0, return_index=True, return_inverse=True)
+    V = m.vertices[idx].copy()
+    U = uv[idx].copy() if uv is not None else None
+    F = inv.ravel()[m.faces]
+    F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])]
+    for _ in range(12):
+        e = np.sort(np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1)
+        ue, einv = np.unique(e, axis=0, return_inverse=True)
+        longue = np.linalg.norm(V[ue[:, 0]] - V[ue[:, 1]], axis=1) > L
+        if not longue.any():
+            break
+        mid = np.full(len(ue), -1)
+        mid[longue] = len(V) + np.arange(longue.sum())
+        V = np.vstack([V, (V[ue[longue, 0]] + V[ue[longue, 1]]) / 2])
+        if U is not None:
+            U = np.vstack([U, (U[ue[longue, 0]] + U[ue[longue, 1]]) / 2])
+        n = len(F)
+        einv = einv.ravel()
+        M = np.column_stack([mid[einv[:n]], mid[einv[n:2 * n]], mid[einv[2 * n:]]])  # ab, bc, ca
+        A, B, C = F[:, 0], F[:, 1], F[:, 2]
+        mab, mbc, mca = M[:, 0], M[:, 1], M[:, 2]
+        k = (mab >= 0).astype(int) + (mbc >= 0) + (mca >= 0)
+        out = [F[k == 0]]
+        s3 = k == 3
+        out += [np.column_stack(t)[s3] for t in ((A, mab, mca), (mab, B, mbc), (mca, mbc, C), (mab, mbc, mca))]
+        s1 = k == 1
+        for e_, t1, t2 in ((mab, (A, mab, C), (mab, B, C)), (mbc, (A, B, mbc), (A, mbc, C)),
+                           (mca, (A, B, mca), (mca, B, C))):
+            sel = s1 & (e_ >= 0)
+            out += [np.column_stack(t1)[sel], np.column_stack(t2)[sel]]
+        s2 = k == 2
+        for sel0, (p0, p1, p2, m1, m2) in ((mca < 0, (A, B, C, mab, mbc)), (mab < 0, (B, C, A, mbc, mca)),
+                                           (mbc < 0, (C, A, B, mca, mab))):
+            sel = s2 & sel0
+            if not sel.any():
+                continue
+            P0, P1, P2, M1, M2 = (x[sel] for x in (p0, p1, p2, m1, m2))
+            out.append(np.column_stack([M1, P1, M2]))
+            d1 = np.linalg.norm(V[P0] - V[M2], axis=1) < np.linalg.norm(V[M1] - V[P2], axis=1)
+            out += [np.column_stack([P0, M1, M2])[d1], np.column_stack([P0, M2, P2])[d1],
+                    np.column_stack([P0, M1, P2])[~d1], np.column_stack([M1, M2, P2])[~d1]]
+        F = np.vstack(out)
+    q = trimesh.Trimesh(V, F, process=False)
+    q.visual = trimesh.visual.TextureVisuals(uv=U, material=getattr(vis, "material", None))
+    q.metadata.update(m.metadata)
+    return q
+
+
 def normales(m, angle=40.0):
     """Normales lisses par sommet (aretes vives au-dela de `angle`), un sommet par coin."""
-    m.update_faces(m.area_faces > 1e-10)
+    t = m.triangles
+    lg = np.max([np.linalg.norm(t[:, i] - t[:, (i + 1) % 3], axis=1) for i in range(3)], axis=0)
+    m.update_faces(2 * m.area_faces / np.maximum(lg, 1e-9) > 5e-5)
     m.remove_unreferenced_vertices()
     F = m.faces
     fn = m.face_normals
@@ -284,7 +377,7 @@ def ecrire(corps, portes, out):
     noms = {}
     for gname, (P, lst) in groupes.items():
         for i, (n, m) in enumerate(lst):
-            m = normales(m)
+            m = normales(raffiner(m, 1.0))
             mat = getattr(m.visual, "material", None)
             if mat is not None and mat is not NOIR and not m.metadata.get("une_face"):
                 mat = mat.copy() if hasattr(mat, "copy") else mat
@@ -342,6 +435,7 @@ def baguettes(mat):
 
 
 def build(out):
+    generer_bases()
     corps, portes = charger()
     hub, n = hublots_exterieurs()
     hub.visual = trimesh.visual.TextureVisuals(material=NOIR)
