@@ -242,6 +242,39 @@ def charger():
     return corps, portes
 
 
+def normales(m, angle=40.0):
+    """Normales lisses par sommet (aretes vives au-dela de `angle`), un sommet par coin."""
+    m.update_faces(m.area_faces > 1e-10)
+    m.remove_unreferenced_vertices()
+    F = m.faces
+    fn = m.face_normals
+    corners = F.ravel()
+    pos = np.round(m.vertices[corners] / 1e-5).astype(np.int64)
+    _, key = np.unique(pos, axis=0, return_inverse=True)
+    key = key.ravel()
+    fidx = np.repeat(np.arange(len(F)), 3)
+    order = np.argsort(key, kind="stable")
+    cos = np.cos(np.radians(angle))
+    vn = np.zeros((len(corners), 3))
+    ks = key[order]
+    bounds = np.flatnonzero(np.diff(ks)) + 1
+    for grp in np.split(order, bounds):
+        nrm = fn[fidx[grp]]
+        sim = nrm @ nrm.T >= cos
+        acc = sim.astype(float) @ nrm
+        vn[grp] = acc / (np.linalg.norm(acc, axis=1, keepdims=True) + 1e-12)
+    v = m.vertices[corners]
+    faces = np.arange(len(corners)).reshape(-1, 3)
+    uv = None
+    vis = m.visual
+    if hasattr(vis, "uv") and vis.uv is not None and len(vis.uv) == len(m.vertices):
+        uv = vis.uv[corners]
+    q = trimesh.Trimesh(v, faces, vertex_normals=vn, process=False)
+    q.visual = trimesh.visual.TextureVisuals(uv=uv, material=getattr(vis, "material", None))
+    q.metadata.update(m.metadata)
+    return q
+
+
 def ecrire(corps, portes, out):
     """Ecrit le glb : un noeud 'Avion' (un maillage, plusieurs materiaux) + un noeud par porte."""
     sc = trimesh.Scene()
@@ -251,6 +284,7 @@ def ecrire(corps, portes, out):
     noms = {}
     for gname, (P, lst) in groupes.items():
         for i, (n, m) in enumerate(lst):
+            m = normales(m)
             mat = getattr(m.visual, "material", None)
             if mat is not None and mat is not NOIR and not m.metadata.get("une_face"):
                 mat = mat.copy() if hasattr(mat, "copy") else mat
@@ -262,7 +296,7 @@ def ecrire(corps, portes, out):
             key = f"{gname}__{i}"
             sc.add_geometry(m, node_name=key, geom_name=key)
             noms[key] = gname
-    data = sc.export(file_type="glb")
+    data = sc.export(file_type="glb", include_normals=True)
     gl = pygltflib.GLTF2.load_from_bytes(data)
     # regroupe les primitives par groupe
     prims = {g: [] for g in groupes}
