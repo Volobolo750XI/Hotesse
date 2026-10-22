@@ -245,9 +245,6 @@ def nettoyer(name, m):
     if name.startswith("A320_Cylinder002"):
         # bout du nez d'origine reste en double sur le nouveau nez
         m.update_faces(m.triangles_center[:, 2] > -17.0)
-    elif name == "Details":
-        # anciens contours gris des hublots, sur la peau exterieure
-        m.update_faces(np.abs(m.triangles_center[:, 0]) < 1.6)
     m.remove_unreferenced_vertices()
     return m
 
@@ -443,10 +440,11 @@ def build(out):
     pb.visual = trimesh.visual.TextureVisuals(material=NOIR)
     fus = dict(corps)["Fuselage"]
     corps.append(("Baguettes", baguettes(dict(corps)["Joints"].visual.material)))
-    corps += [("HublotsNoirs", hub), ("PareBrise", pb), ("NezBouche", boucher_parebrise(fus))]
+    # fenetres comme avant : de vrais trous, pas de hublots / pare-brise noirs peints
+    del hub, pb, fus
     ecrire(corps, portes, out)
     tri = sum(len(m.faces) for _, m in corps) + sum(len(m.faces) for _, l in portes.values() for _, m in l)
-    print(f"{out}: 1 objet Avion + {len(portes)} portes, {n} hublots par cote, {tri} triangles")
+    print(f"{out}: 1 objet Avion + {len(portes)} portes, {tri} triangles")
 
 
 if __name__ == "__main__":
