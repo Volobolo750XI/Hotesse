@@ -333,12 +333,24 @@ DOORS = []
 
 
 # ------------------------------------------------------------- parois laterales
+def vers_le_trou(m, profile, poly, d0, d1):
+    """Tourne les faces d'un tube vers l'interieur de l'ouverture (sinon noires dans UEFN)."""
+    c = poly.centroid
+    p, _ = profile.map(np.array([c.y]), np.array([c.x]), (d0 + d1) / 2)
+    v = p[0] - m.triangles_center
+    if (m.face_normals * v).sum(1).mean() < 0:
+        m.faces = m.faces[:, ::-1]
+    return m
+
+
 def openings(parts, profile, shapes, bez_depth, depth):
     """Ouvertures (hublots ou portes) : encadrement en retrait + embrasure."""
     for bz, h in shapes:
-        parts.add("panel", tube(profile, bz.exterior.coords, 0, bez_depth), sym=True)
+        parts.add("panel", vers_le_trou(tube(profile, bz.exterior.coords, 0, bez_depth), profile, bz, 0, bez_depth),
+                  sym=True)
         parts.add("panel", surface(profile, bz.difference(h), bez_depth, 0.02), sym=True)
-        parts.add("reveal", tube(profile, h.exterior.coords, bez_depth, depth), sym=True)
+        parts.add("reveal", vers_le_trou(tube(profile, h.exterior.coords, bez_depth, depth), profile, h, bez_depth, depth),
+                  sym=True)
 
 
 def build_cabin(parts):
