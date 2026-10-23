@@ -122,6 +122,16 @@ def separation(parts):
         parts.add("curtain", rideau(cote, z + 0.06))
 
 
+def toilettes_vides(parts):
+    """Zone des toilettes VIDE : murs, sol, plafond et cloison du fond seulement.
+    Plus de cabinets, portes, lavabos, miroirs : les toilettes s'achetent par dalles."""
+    z0, z1 = G.LAV
+    G.build_open_zone(parts, z0, z1)
+    G.build_ceiling(parts, z0, z1, lights=False)
+    G.floor(parts, z0, z1)
+    G.bulkhead(parts, z0, thickness=0.0001)
+
+
 def ajouter_separation():
     cabine = G.build_cabin
 
@@ -132,10 +142,13 @@ def ajouter_separation():
 
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(G.HERE, "avion_niveau2_business.glb")
+    G.build_lavatories = toilettes_vides
     N.installer()
     ajouter_separation()
     sc = E.build()
     N.reculer_ailes(sc)
+    for n in [n for n in sc.graph.nodes_geometry if n.startswith("WC_")]:    # pas de cuvettes
+        sc.delete_geometry(sc.graph[n][1])
     sc.export(out)
     print(f"{out}: longueur {E.NOSE_TIP - E.TAIL_TIP:.1f} m (+{EXTRA:.2f} m), "
           f"Business de z={-FIN_ECO:.2f} a z={-DEBUT_BUSINESS:.2f} (glTF), "
