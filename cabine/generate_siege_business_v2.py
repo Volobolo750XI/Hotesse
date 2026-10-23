@@ -41,6 +41,20 @@ def tex_tissu(rgb, n=512):
     return np.clip(np.array(rgb)[None, None, :] * v[..., None], 0, 255).astype(np.uint8)
 
 
+def tex_matelasse(rgb, n=512):
+    """Tissu avec des panneaux cousus : bandes horizontales bombees separees par des coutures."""
+    b = bruit(n, 64, 3)
+    y = np.arange(n)[:, None] / n
+    bande = 0.10                                       # une bande = 0,1 UV (5 cm avec echelle 0.5)
+    t = (y % bande) / bande
+    bombe = 0.90 + 0.10 * np.sin(np.pi * t)            # chaque bande est bombee
+    couture = np.exp(-((t - 0.0) / 0.03) ** 2) + np.exp(-((t - 1.0) / 0.03) ** 2)
+    pts = ((np.arange(n)[None, :] // 6) % 2) * 0.5 + 0.5   # points de couture
+    v = bombe * (0.92 + 0.08 * b) * (1 - 0.35 * couture * pts)
+    v = np.repeat(v, n, axis=1) if v.shape[1] == 1 else v
+    return np.clip(np.array(rgb)[None, None, :] * v[..., None], 0, 255).astype(np.uint8)
+
+
 def tex_cuir(rgb, n=512):
     grain = bruit(n, 8, 3)
     v = 0.92 + 0.10 * (grain - 0.5) * 2 * 0.5
@@ -81,7 +95,7 @@ M = {
     "exterieur": mat("CoqueBleuNuit", tex_cuir((34, 42, 70)), 0.4),
     "tissu": mat("TissuBleuNuit", tex_tissu((40, 50, 82)), 0.9),
     "cuir": mat("CuirBleuNuit", tex_cuir((44, 54, 88)), 0.55),
-    "assise": mat("TissuAssise", tex_tissu((52, 62, 98)), 0.85),
+    "assise": mat("TissuAssise", tex_matelasse((54, 64, 100)), 0.85),
     "bois": mat("BoisClair", tex_bois(), 0.45),
     "rayures": mat("CoussinRaye", tex_rayures(), 0.85),
     "metal": mat("MetalBrosse", tex_uni((150, 150, 155)), 0.35, 0.9),
@@ -96,8 +110,11 @@ PIECES = {k: [] for k in M}
 def uv_boite(m, echelle=1.0):
     """UV par projection selon la normale dominante (comme un triplanaire)."""
     m = m.copy()
-    m = trimesh.Trimesh(m.vertices[m.faces].reshape(-1, 3), np.arange(len(m.faces) * 3).reshape(-1, 3),
+    lisse = trimesh.Trimesh(m.vertices, m.faces, process=True)       # sommets soudes -> normales lisses
+    vn = lisse.vertex_normals[lisse.faces].reshape(-1, 3)
+    m = trimesh.Trimesh(lisse.vertices[lisse.faces].reshape(-1, 3), np.arange(len(lisse.faces) * 3).reshape(-1, 3),
                         process=False)
+    m.metadata["normales"] = vn
     n = np.repeat(m.face_normals, 3, axis=0)
     v = m.vertices
     ax = np.argmax(np.abs(n), axis=1)
@@ -184,20 +201,24 @@ def coque():
         nor = -nor
     h = hauteur(pts[:, 1], z_av, zc)
     k = 10                                                   # profil du bord arrondi
-    def surface(decal, cle):
+    def surface(decal, cle, bas=0.03, marge_haut=0.0):
         V, F = [], []
-        ys = np.linspace(0.05, 1.0, 16)
+        ys = np.linspace(0.0, 1.0, 16)
         for i in range(n):
+            haut = h[i] - EP / 2 - marge_haut
+            b0 = bas if bas >= 0 else h[i] - EP / 2 + bas
             for y in ys:
                 p = pts[i] + nor[i] * decal
-                V.append((p[0], y * (h[i] - EP / 2), p[1]))
+                V.append((p[0], b0 + y * (haut - b0), p[1]))
         nv = len(ys)
         for i in range(n - 1):
             for j in range(nv - 1):
                 a, b, c, d = i * nv + j, (i + 1) * nv + j, (i + 1) * nv + j + 1, i * nv + j + 1
                 F += [[a, b, c], [a, c, d]] if decal > 0 else [[a, c, b], [a, d, c]]
         return trimesh.Trimesh(np.array(V), np.array(F), process=False)
-    ajouter("exterieur", surface(EP / 2, "ext"), 0.5)
+    BANDE = 0.07                                             # bandeau blanc en haut de la coque
+    ajouter("exterieur", surface(EP / 2, "ext", 0.03, BANDE), 0.5)
+    ajouter("laque", surface(EP / 2, "bandeau", -BANDE))
     ajouter("tissu", surface(-EP / 2, "int"), 0.5)
     # bord superieur arrondi (demi-tube) : laque
     V, F = [], []
@@ -291,6 +312,8 @@ def construire():
             continue
         m = trimesh.util.concatenate(lst)
         uv = np.vstack([p.metadata["uv"] for p in lst])
+        vn = np.vstack([p.metadata["normales"] for p in lst])
+        m = trimesh.Trimesh(m.vertices, m.faces, vertex_normals=vn, process=False)
         m.visual = trimesh.visual.TextureVisuals(uv=uv, material=M[k])
         sc.add_geometry(m, node_name=f"SiegeBusiness_{M[k].name}", geom_name=f"SiegeBusiness_{M[k].name}")
     return sc
@@ -305,7 +328,7 @@ if __name__ == "__main__":
                 g.apply_transform(np.diag([-1, 1, 1, 1]))
                 g.invert()
         out = os.path.join(HERE, nom)
-        sc.export(out)
+        sc.export(out, include_normals=True)
         b = sc.bounds
         print(f"{out}: {b[1][0]-b[0][0]:.2f} x {b[1][2]-b[0][2]:.2f} m, {b[1][1]-b[0][1]:.2f} m de haut, "
               f"{sum(len(g.faces) for g in sc.geometry.values())} triangles")
