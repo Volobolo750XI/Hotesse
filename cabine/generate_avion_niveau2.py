@@ -94,9 +94,35 @@ def epouser_la_peau(sc):
         m.vertices = v
 
 
+RECUL_AILE = 0.6        # m vers l'arriere : ailes, carenage du ventre, train principal
+RECUL_MOTEUR = 3.4      # m vers l'arriere : reacteurs (leur centre sous le milieu de l'aile)
+
+
+def reculer_ailes(sc):
+    for node in sc.graph.nodes_geometry:
+        T, g = sc.graph[node]
+        if not g.startswith("A320"):
+            continue
+        m = sc.geometry[g]
+        v = m.vertices.copy()
+        nom = g.split("_")[1]
+        if nom == "Cylinder002":
+            # aile + carenage du ventre (pas l'empennage, a l'arriere)
+            k = (v[:, 2] < 5.0) & ((np.abs(v[:, 0]) > 1.9) | (v[:, 1] < -0.3))
+            v[k, 2] += RECUL_AILE
+        elif nom in ("Cylinder007", "Cylinder013"):
+            v[:, 2] += RECUL_MOTEUR
+        elif nom in ("Cylinder009", "Cylinder017", "Cylinder018", "Cylinder019", "Cylinder020", "Cylinder021"):
+            v[:, 2] += RECUL_AILE
+        else:
+            continue
+        m.vertices = v
+
+
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(G.HERE, "avion_niveau2.glb")
     sc = E.build()
     epouser_la_peau(sc)
+    reculer_ailes(sc)
     sc.export(out)
     print(f"{out}: cabine {2 * MUR_MAX:.2f} m de large, {sum(len(g.faces) for g in sc.geometry.values())} triangles")
